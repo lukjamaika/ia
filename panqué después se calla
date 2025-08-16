@@ -1,0 +1,959 @@
+[15/8, 9:56 p.m.] L P: package com.aisha.assistant
+
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import android.provider.CalendarContract
+import android.speech.tts.TextToSpeech
+import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
+import kotlinx.coroutines.*
+import okhttp3.*
+import org.json.JSONObject
+import java.util.*
+import android.graphics.Bitmap
+import android.webkit.WebView
+import android.webkit.WebViewClient
+
+class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
+    // API Keys
+    val openAiApiKey = "sk-proj-..." // <-- TU CLAVE OPENAI AQUÍ
+    val aishaBrainApiKey = "aisha_brain_key" // <-- PARA AISHA BRAIN
+    
+    // Componentes principales
+    lateinit var tts: TextToSpeech
+    private var lastAnswer: String = ""
+    private var aishaBrain: AishaBrainAPI? = null
+    private var emotionSystem: AishaHeartAPI? = null
+    
+    // UI Components
+    private lateinit var txtResponse: TextView
+    private lateinit var edtPrompt: EditText
+    private lateinit var webViewAvatar: WebView
+    private lateinit var progressBar: ProgressBar
+    
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+        
+        initializeComponents()
+        setupUI()
+        initializeAishaSystems()
+    }
+    
+    private fun initializeComponents() {
+        tts = TextToSpeech(this, this)
+        txtResponse = findViewById(R.id.txtResponse)
+        edtPrompt = findViewById(R.id.edtPrompt)
+        webViewAvatar = findViewById(R.id.webViewAvatar)
+        progressBar = findViewById(R.id.progressBar)
+    }
+    
+    private fun setupUI() {
+        val btnSend = findViewById<Button>(R.id.btnSend)
+        val btnRepeat = findViewById<Button>(id.btnRepeat)
+        val btnWhatsApp = findViewById<Button>(R.id.btnWhatsApp)
+        val btnBrowser = findViewById<Button>(R.id.btnBrowser)
+        val btnMail = findViewById<Button>(R.id.btnMail)
+        val btnCalendar = findViewById<Button>(R.id.btnCalendar)
+        val btnAvatar = findViewById<Button>(R.id.btnAvatar)
+        
+        // Configurar WebView para avatar dinámico
+        setupAvatarWebView()
+        
+        btnSend.setOnClickListener {
+            val prompt = edtPrompt.text.toString()
+            if (prompt.isNotBlank()) {
+                processWithAisha(prompt)
+            } else {
+                Toast.makeText(this, "Escribí algo primero", Toast.LENGTH_SHORT).show()
+            }
+        }
+        
+        btnRepeat.setOnClickListener { speak(lastAnswer) }
+        
+        btnWhatsApp.setOnClickListener { launchApp("com.whatsapp") }
+        btnBrowser.setOnClickListener { openBrowser() }
+        btnMail.setOnClickListener { openMail() }
+        btnCalendar.setOnClickListener { openCalendar() }
+        btnAvatar.setOnClickListener { showDynamicAvatar() }
+    }
+    
+    private fun setupAvatarWebView() {
+        webViewAvatar.settings.javaScriptEnabled = true
+        webViewAvatar.settings.domStorageEnabled = true
+        webViewAvatar.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                progressBar.visibility = ProgressBar.GONE
+            }
+        }
+        
+        // Cargar avatar HTML dinámico
+        loadDynamicAvatar()
+    }
+    
+    private fun loadDynamicAvatar() {
+        val avatarHtml = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {
+                    margin: 0;
+                    padding: 0;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    font-family: Arial, sans-serif;
+                }
+                .avatar-container {
+                    text-align: center;
+                    color: white;
+                }
+                .avatar {
+                    width: 150px;
+                    height: 150px;
+                    border-radius: 50%;
+                    background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
+                    margin: 0 auto 20px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 60px;
+                    animation: pulse 2s infinite;
+                }
+                @keyframes pulse {
+                    0% { transform: scale(1); }
+                    50% { transform: scale(1.05); }
+                    100% { transform: scale(1); }
+                }
+                .status {
+                    font-size: 14px;
+                    opacity: 0.8;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="avatar-container">
+                <div class="avatar">🤖</div>
+                <div class="status" id="status">Aisha AI - Lista</div>
+            </div>
+            <script>
+                function updateAvatar(emotion, message) {
+                    const avatar = document.querySelector('.avatar');
+                    const status = document.getElementById('status');
+                    
+                    // Cambiar color según emoción
+                    switch(emotion) {
+                        case 'joy':
+                            avatar.style.background = 'linear-gradient(45deg, #ffd89b, #19547b)';
+                            break;
+                        case 'sadness':
+                            avatar.style.background = 'linear-gradient(45deg, #606c88, #3f4c6b)';
+                            break;
+                        case 'anger':
+                            avatar.style.background = 'linear-gradient(45deg, #ff5e62, #ff9966)';
+                            break;
+                        default:
+                            avatar.style.background = 'linear-gradient(45deg, #667eea, #764ba2)';
+                    }
+                    
+                    status.textContent = message;
+                }
+                
+                // Animación de hablando
+                function animateSpeaking() {
+                    const avatar = document.querySelector('.avatar');
+                    avatar.style.animation = 'pulse 0.5s infinite';
+                    setTimeout(() => {
+                        avatar.style.animation = 'pulse 2s infinite';
+                    }, 3000);
+                }
+            </script>
+        </body>
+        </html>
+        """
+        
+        webViewAvatar.loadDataWithBaseURL(null, avatarHtml, "text/html", "UTF-8", null)
+    }
+    
+    private fun initializeAishaSystems() {
+        try {
+            aishaBrain = AishaBrainAPI()
+            emotionSystem = AishaHeartAPI()
+            txtResponse.text = "✅ Aisha AI inicializada correctamente"
+            updateAvatarStatus("ready", "Aisha AI - Lista")
+        } catch (e: Exception) {
+            txtResponse.text = "⚠️ Error inicializando Aisha: ${e.message}"
+        }
+    }
+    
+    private fun processWithAisha(prompt: String) {
+        progressBar.visibility = ProgressBar.VISIBLE
+        
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                // 1. Procesar con AishaBrain (razonamiento)
+                val brainAnalysis = aishaBrain?.analyzeSituation(prompt) ?: AnalysisResult(
+                    conclusion = "Procesando tu solicitud...",
+                    confidence = 0.5,
+                    relatedMemories = emptyList(),
+                    suggestedActions = emptyList()
+                )
+                
+                // 2. Procesar emoción
+                val emotionResult = emotionSystem?.detectEmotion(prompt) ?: EmotionResult(
+                    primaryEmotion = "neutral",
+                    intensity = 0.5,
+                    confidence = 0.5,
+                    moodChange = "neutral"
+                )
+                
+                // 3. Generar respuesta combinada
+                val finalResponse = generateAishaResponse(prompt, brainAnalysis, emotionResult)
+                
+                // 4. Actualizar avatar según emoción
+                runOnUiThread {
+                    updateAvatarStatus(emotionResult.primaryEmotion, "Pensando...")
+                    speak(finalResponse)
+                    txtResponse.text = finalResponse
+                    lastAnswer = finalResponse
+                    progressBar.visibility = ProgressBar.GONE
+                }
+                
+            } catch (e: Exception) {
+                runOnUiThread {
+                    txtResponse.text = "Error procesando con Aisha: ${e.message}"
+                    progressBar.visibility = ProgressBar.GONE
+                    speak("Lo siento, tuve un problema procesando tu solicitud.")
+                }
+            }
+        }
+    }
+    
+    private fun generateAishaResponse(
+        prompt: String,
+        brainAnalysis: AnalysisResult,
+        emotionResult: EmotionResult
+    ): String {
+        return when (emotionResult.primaryEmotion) {
+            "joy" -> "¡Qué alegría tu consulta! ${brainAnalysis.conclusion}"
+            "sadness" -> "Lamento que te sientas así. ${brainAnalysis.conclusion}"
+            "anger" -> "Entiendo tu frustración. ${brainAnalysis.conclusion}"
+            else -> brainAnalysis.conclusion
+        }
+    }
+    
+    private fun updateAvatarStatus(emotion: String, message: String) {
+        webViewAvatar.evaluateJavascript(
+            "updateAvatar('$emotion', '$message');", 
+            null
+        )
+    }
+    
+    private fun animateSpeaking() {
+        webViewAvatar.evaluateJavascript(
+            "animateSpeaking();", 
+            null
+        )
+    }
+    
+    // Métodos existentes mejorados
+    override fun onInit(status: Int) {
+        if (status == TextToSpeech.SUCCESS) {
+            tts.language = Locale("es", "AR")
+            tts.setSpeechRate(0.9f)
+            tts.setPitch(1.1f)
+        }
+    }
+    
+    fun speak(text: String) {
+        if (text.isNotBlank()) {
+            animateSpeaking()
+            tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "aisha_speak")
+        }
+    }
+    
+    private fun launchApp(packageName: String) {
+        try {
+            val intent = packageManager.getLaunchIntentForPackage(packageName)
+            if (intent != null) {
+                startActivity(intent)
+            } else {
+                Toast.makeText(this, "Aplicación no encontrada", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+    
+    private fun openBrowser() {
+        val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com"))
+        startActivity(browserIntent)
+    }
+    
+    private fun openMail() {
+        val mailIntent = Intent(Intent.ACTION_SENDTO).apply {
+            data = Uri.parse("mailto:")
+            putExtra(Intent.EXTRA_SUBJECT, "Mensaje de Aisha AI")
+            putExtra(Intent.EXTRA_TEXT, "Hola,\n\n")
+        }
+        startActivity(Intent.createChooser(mailIntent, "Enviar email"))
+    }
+    
+    private fun openCalendar() {
+        val intent = Intent(Intent.ACTION_INSERT).apply {
+            data = CalendarContract.Events.CONTENT_URI
+            putExtra(CalendarContract.Events.TITLE, "Evento con Aisha AI")
+            putExtra(CalendarContract.Events.DESCRIPTION, "Reunión programada")
+        }
+        startActivity(intent)
+    }
+    
+    private fun showDynamicAvatar() {
+        // Mostrar avatar más detallado o animaciones especiales
+        webViewAvatar.loadUrl("https://example.com/aisha-avatar") // URL del avatar avanzado
+    }
+    
+    // Integración con OpenAI (mejorada)
+    fun callOpenAI(prompt: String, callback: (String) -> Unit) {
+        if (openAiApiKey == "sk-proj-...") {
+            callback("Por favor, configura tu API Key de OpenAI")
+            return
+        }
+        
+        val client = OkHttpClient()
+        val messages = listOf(
+            mapOf("role" to "system", "content" to "Eres Aisha, una asistente AI amigable y ética."),
+            mapOf("role" to "user", "content" to prompt)
+        )
+        
+        val json = JSONObject().apply {
+            put("model", "gpt-4") // o gpt-4-turbo
+            put("messages", messages)
+            put("temperature", 0.7)
+        }
+        
+        val body = RequestBody.create(
+            MediaType.parse("application/json"), 
+            json.toString()
+        )
+        
+        val request = Request.Builder()
+            .url("https://api.openai.com/v1/chat/completions")
+            .header("Authorization", "Bearer $openAiApiKey")
+            .post(body)
+            .build()
+        
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val response = client.newCall(request).execute()
+                val resBody = response.body()?.string()
+                val obj = JSONObject(resBody)
+                val answer = obj.getJSONArray("choices")
+                    .getJSONObject(0)
+                    .getJSONObject("message")
+                    .getString("content")
+                callback(answer)
+            } catch (e: Exception) {
+                callback("Error: ${e.message}")
+            }
+        }
+    }
+    
+    override fun onDestroy() {
+        if (::tts.isInitialized) {
+            tts.stop()
+            tts.shutdown()
+        }
+        super.onDestroy()
+    }
+}
+[15/8, 10:05 p.m.] L P: Html
+[15/8, 10:05 p.m.] L P: <!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+        
+        .avatar-container {
+            text-align: center;
+            position: relative;
+        }
+        
+        .avatar-face {
+            width: 180px;
+            height: 180px;
+            border-radius: 50%;
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            margin: 0 auto 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 70px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            transition: all 0.3s ease;
+        }
+        
+        .avatar-face::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
+            transform: rotate(30deg);
+        }
+        
+        .eyes {
+            display: flex;
+            position: absolute;
+            top: 60px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        
+        .eye {
+            width: 15px;
+            height: 25px;
+            background: white;
+            border-radius: 50%;
+            margin: 0 15px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .pupil {
+            width: 8px;
+            height: 8px;
+            background: #333;
+            border-radius: 50%;
+            position: absolute;
+            top: 8px;
+            left: 3px;
+            transition: all 0.2s ease;
+        }
+        
+        .mouth {
+            position: absolute;
+            bottom: 50px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 40px;
+            height: 20px;
+            border-bottom: 3px solid white;
+            border-radius: 0 0 50% 50%;
+            transition: all 0.3s ease;
+        }
+        
+        .status-text {
+            color: white;
+            font-size: 16px;
+            margin-top: 10px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            min-height: 24px;
+        }
+        
+        .thinking {
+            animation: thinking 1s infinite;
+        }
+        
+        .speaking {
+            animation: speaking 0.5s infinite;
+        }
+        
+        @keyframes thinking {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.02); }
+        }
+        
+        @keyframes speaking {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+        
+        @keyframes blink {
+            0%, 40%, 80%, 100% { height: 25px; }
+            20%, 60% { height: 5px; }
+        }
+        
+        .blinking .eye {
+            animation: blink 4s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="avatar-container">
+        <div class="avatar-face" id="avatarFace">
+            <div class="eyes">
+                <div class="eye"><div class="pupil"></div></div>
+                <div class="eye"><div class="pupil"></div></div>
+            </div>
+            <div class="mouth" id="mouth"></div>
+        </div>
+        <div class="status-text" id="statusText">Aisha AI - Inicializando...</div>
+    </div>
+
+    <script>
+        let currentEmotion = 'neutral';
+        
+        function updateAvatar(emotion, message) {
+            const avatar = document.getElementById('avatarFace');
+            const status = document.getElementById('statusText');
+            const mouth = document.getElementById('mouth');
+            
+            currentEmotion = emotion;
+            status.textContent = message;
+            
+            // Cambiar expresión según emoción
+            switch(emotion) {
+                case 'joy':
+                    avatar.style.background = 'linear-gradient(45deg, #ffd89b, #19547b)';
+                    mouth.style.borderRadius = '0 0 50% 50%';
+                    mouth.style.width = '50px';
+                    break;
+                case 'sadness':
+                    avatar.style.background = 'linear-gradient(45deg, #606c88, #3f4c6b)';
+                    mouth.style.borderRadius = '50% 50% 0 0';
+                    mouth.style.width = '30px';
+                    mouth.style.borderTop = '3px solid white';
+                    mouth.style.borderBottom = 'none';
+                    break;
+                case 'anger':
+                    avatar.style.background = 'linear-gradient(45deg, #ff5e62, #ff9966)';
+                    mouth.style.width = '20px';
+                    mouth.style.borderRadius = '0';
+                    break;
+                case 'surprise':
+                    avatar.style.background = 'linear-gradient(45deg, #a8edea, #fed6e3)';
+                    mouth.style.width = '25px';
+                    mouth.style.height = '25px';
+                    mouth.style.borderRadius = '50%';
+                    mouth.style.border = '3px solid white';
+                    break;
+                default:
+                    avatar.style.background = 'linear-gradient(45deg, #667eea, #764ba2)';
+                    mouth.style.borderRadius = '0 0 50% 50%';
+                    mouth.style.width = '40px';
+                    mouth.style.borderBottom = '3px solid white';
+            }
+        }
+        
+        function animateThinking() {
+            const avatar = document.getElementById('avatarFace');
+            avatar.classList.add('thinking');
+            setTimeout(() => {
+                avatar.classList.remove('thinking');
+            }, 3000);
+        }
+        
+        function animateSpeaking() {
+            const avatar = document.getElementById('avatarFace');
+            avatar.classList.add('speaking');
+            setTimeout(() => {
+                avatar.classList.remove('speaking');
+            }, 3000);
+        }
+        
+        function blinkEyes() {
+            const eyes = document.querySelector('.eyes');
+            eyes.classList.add('blinking');
+            setTimeout(() => {
+                eyes.classList.remove('blinking');
+            }, 2000);
+        }
+        
+        // Animaciones automáticas
+        setInterval(blinkEyes, 5000);
+        setInterval(animateThinking, 10000);
+        
+        // Inicializar
+        setTimeout(() => {
+            updateAvatar('neutral', 'Aisha AI - Lista');
+        }, 1000);
+    </script>
+</body>
+</html>
+[15/8, 10:07 p.m.] L P: Comandos
+[15/8, 10:07 p.m.] L P: dependencies {
+    implementation 'androidx.core:core-ktx:1.9.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.8.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    implementation 'com.squareup.okhttp3:okhttp:4.10.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.4'
+}
+[15/8, 10:08 p.m.] L P: Permisos android
+[15/8, 10:08 p.m.] L P: <uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+[15/8, 10:09 p.m.] L P: Avatar lógica http
+[15/8, 10:09 p.m.] L P: <!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+        
+        .avatar-container {
+            position: relative;
+            width: 400px;
+            height: 600px;
+            text-align: center;
+            transform-style: preserve-3d;
+        }
+        
+        .avatar-head {
+            width: 200px;
+            height: 250px;
+            border-radius: 50%;
+            background: url('https://example.com/face.jpg') no-repeat center center;
+            background-size: cover;
+            position: absolute;
+            top: 50px;
+            left: 50%;
+            transform: translateX(-50%);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            z-index: 2;
+            transition: all 0.
+[15/8, 11:22 p.m.] L P: Ap depurda
+[15/8, 11:23 p.m.] L P: /MiAsistenteVIP/
+│
+├── main.py                 # Punto de entrada del asistente
+├── config.json             # Configuración, claves API y parámetros
+├── requirements.txt        # Librerías necesarias
+│
+├── /modules/               # Módulos separados
+│   ├── api_handler.py      # Gestión de llamadas a APIs
+│   ├── memory.py           # Banco de memoria de la IA
+│   ├── nlp_engine.py       # Procesamiento de lenguaje y lógica GPT
+│   ├── interface.py        # Interfaz web / consola
+│   └── utils.py            # Funciones auxiliares
+│
+├── /assets/                # Recursos estáticos
+│   ├── css/
+│   ├── js/
+│   └── images/
+│
+└── /logs/                  # Archivos de registro del asistente
+[15/8, 11:24 p.m.] L P: Codigo
+[15/8, 11:24 p.m.] L P: # =========================================================
+# ¡Hola, Joaquín! 👋 Bienvenido a main.py, el corazón del asistente
+# =========================================================
+
+from modules.interface import start_interface
+from modules.memory import Memory
+from modules.nlp_engine import NLPEngine
+from modules.api_handler import APIHandler
+import json
+
+# Cargar configuración
+with open("config.json", "r", encoding="utf-8") as f:
+    config = json.load(f)
+
+# Inicializar memoria del asistente
+memory = Memory()
+
+# Inicializar motor de NLP
+nlp_engine = NLPEngine(memory=memory, config=config)
+
+# Inicializar gestor de APIs
+api_handler = APIHandler(config=config)
+
+# =========================================================
+# ¡Saludito! 🚀 Aquí empieza la magia: se lanza la interfaz
+# =========================================================
+if __name__ == "__main__":
+    start_interface(nlp_engine, api_handler, memory)
+[15/8, 11:25 p.m.] L P: Codigo jseaon
+[15/8, 11:25 p.m.] L P: {
+  "assistant_name": "VIPAsistente",
+  "language": "es-ES",
+  "openai_api_key": "TU_API_KEY_AQUI",
+  "other_private_api": {
+    "api1": "KEY_API_1",
+    "api2": "KEY_API_2",
+    "api3": "KEY_API_3",
+    "api4": "KEY_API_4",
+    "api5": "KEY_API_5"
+  }
+}
+[15/8, 11:25 p.m.] L P: Confi jeason
+[15/8, 11:25 p.m.] L P: {
+  "assistant_name": "VIPAsistente",
+  "language": "es-ES",
+  "openai_api_key": "TU_API_KEY_AQUI",
+  "other_private_api": {
+    "api1": "KEY_API_1",
+    "api2": "KEY_API_2",
+    "api3": "KEY_API_3",
+    "api4": "KEY_API_4",
+    "api5": "KEY_API_5"
+  }
+}
+[15/8, 11:26 p.m.] L P: Codigo módulos en yton
+[15/8, 11:26 p.m.] L P: # =========================================================
+# ¡Hola, Joaquín! 👋 Bienvenido a interface.py
+# Aquí se maneja todo lo visible del asistente
+# =========================================================
+
+def start_interface(nlp_engine, api_handler, memory):
+    """
+    Inicia la interfaz del asistente.
+    Combina consola simple y preparación para web.
+    """
+    print("===================================")
+    print("🌟 VIPAsistente está listo para ti 🌟")
+    print("===================================")
+
+    while True:
+        user_input = input("Tú: ")
+        if user_input.lower() in ["salir", "exit", "cerrar"]:
+            print("VIPAsistente: ¡Hasta luego, Joaquín! 👋")
+            break
+
+        # Procesar mensaje
+        response = nlp_engine.process(user_input)
+        
+        # Consultar APIs si es necesario
+        api_response = api_handler.handle(user_input)
+        if api_response:
+            response += f"\n🤖 API dice: {api_response}"
+
+        # Guardar en memoria
+        memory.add_to_memory(user_input, response)
+
+        # Mostrar respuesta
+        print(f"VIPAsistente: {response}")
+[15/8, 11:26 p.m.] L P: Codigo memoria yton
+[15/8, 11:27 p.m.] L P: # =========================================================
+# ¡Hola, Joaquín! 👋 Bienvenido a memory.py
+# Aquí se guarda todo lo que el asistente recuerda
+# =========================================================
+
+class Memory:
+    def __init__(self):
+        self.memory_list = []
+
+    def add_to_memory(self, user_text, assistant_text):
+        self.memory_list.append({
+            "user": user_text,
+            "assistant": assistant_text
+        })
+        print(f"🧠 Memoria actualizada, total {len(self.memory_list)} items")
+
+    def get_memory(self):
+        return self.memory_list
+[15/8, 11:28 p.m.] L P: Módulo lenguaje
+[15/8, 11:28 p.m.] L P: # =========================================================
+# ¡Hola, Joaquín! 👋 Bienvenido a nlp_engine.py
+# Aquí se procesa el texto con GPT (o tu modelo local)
+# =========================================================
+
+import openai  # Si vas a usar la API de OpenAI
+
+class NLPEngine:
+    def __init__(self, api_key=None):
+        self.api_key = api_key
+        if api_key:
+            openai.api_key = api_key
+
+    def process(self, text):
+        """
+        Procesa el texto del usuario.
+        Por ahora usa OpenAI GPT-3.5/4 si api_key está definida.
+        """
+        if self.api_key:
+            try:
+                response = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": text}],
+                    max_tokens=200
+                )
+                return response['choices'][0]['message']['content'].strip()
+            except Exception as e:
+                return f"⚠️ Error en GPT: {str(e)}"
+        else:
+            # Fallback local simple
+            return f"Recibí tu mensaje: '{text}' (modo local sin API)"
+[15/8, 11:29 p.m.] L P: Conector módulos api externos pyton
+[15/8, 11:29 p.m.] L P: # =========================================================
+# ¡Hola, Joaquín! 👋 Bienvenido a api_handler.py
+# Aquí se llaman tus APIs privadas o de terceros
+# =========================================================
+
+import requests
+
+class APIHandler:
+    def __init__(self):
+        # Placeholder de tus APIs privadas
+        self.apis = [
+            "https://misapi1.com/endpoint",
+            "https://misapi2.com/endpoint",
+            "https://misapi3.com/endpoint",
+            "https://misapi4.com/endpoint",
+            "https://misapi5.com/endpoint"
+        ]
+
+    def handle(self, user_input):
+        """
+        Lógica para decidir qué API usar.
+        Por ahora prueba con la primera disponible.
+        """
+        for api_url in self.apis:
+            try:
+                resp = requests.post(api_url, json={"input": user_input}, timeout=3)
+                if resp.status_code == 200:
+                    return resp.json().get("output", None)
+            except Exception:
+                continue  # Si falla, prueba siguiente API
+        return None  # Ninguna API respondió
+[15/8, 11:30 p.m.] L P: # =========================================================
+# ¡Hola, Joaquín! 👋 main.py listo para correr
+# Este es tu script principal que junta todo
+# =========================================================
+
+from modules.nlp_engine import NLPEngine
+from modules.api_handler import APIHandler
+import json
+
+# ----------------------
+# Configuración
+# ----------------------
+API_KEY = "TU_API_KEY_OPENAI"  # si querés usar GPT
+nlp = NLPEngine(api_key=API_KEY)
+api_handler = APIHandler()
+memory_file = "memory.json"
+
+# ----------------------
+# Funciones de memoria
+# ----------------------
+def load_memory():
+    try:
+        with open(memory_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return []
+
+def save_memory(memory):
+    with open(memory_file, "w", encoding="utf-8") as f:
+        json.dump(memory, f, ensure_ascii=False, indent=2)
+
+# ----------------------
+# Función principal
+# ----------------------
+def chat():
+    memory = load_memory()
+    print("💬 ¡Bienvenido a tu asistente VIP, Joaquín!")
+    print("Escribe 'salir' para terminar.\n")
+
+    while True:
+        user_input = input("Tú: ")
+        if user_input.lower() in ["salir", "exit"]:
+            break
+
+        # 1️⃣ Primero probamos tus APIs privadas
+        api_response = api_handler.handle(user_input)
+        if api_response:
+            response = api_response
+        else:
+            # 2️⃣ Si no hay respuesta, usamos GPT/fallback local
+            response = nlp.process(user_input)
+
+        # 3️⃣ Guardamos en memoria
+        memory.append({"user": user_input, "assistant": response})
+        save_memory(memory)
+
+        # 4️⃣ Mostramos respuesta
+        print(f"🤖 Asistente: {response}\n")
+
+# ----------------------
+# Ejecución
+# ----------------------
+if __name__ == "__main__":
+    chat()
+[15/8, 11:30 p.m.] L P: mi_asistente/
+│
+├─ main.py
+├─ memory.json       # memoria inicial vacía
+├─ requirements.txt  # librerías necesarias
+└─ modules/
+    ├─ __init__.py
+    ├─ nlp_engine.py
+    └─ api_handler.py
+[15/8, 11:30 p.m.] L P: # =========================================================
+# Motor de lenguaje (GPT o fallback local)
+# =========================================================
+import openai
+
+class NLPEngine:
+    def __init__(self, api_key=None):
+        self.api_key = api_key
+        if self.api_key:
+            openai.api_key = self.api_key
+
+    def process(self, prompt):
+        if self.api_key:
+            # Usamos GPT vía API
+            try:
+                response = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.7
+                )
+                return response.choices[0].message.content.strip()
+            except Exception as e:
+                return f"[Error GPT API: {e}]"
+        else:
+            # Fallback local simple
+            return f"[Local fallback]: No entendí: {prompt}"
+[15/8, 11:31 p.m.] L P: # =========================================================
+# Manejador de APIs privadas
+# =========================================================
+class APIHandler:
+    def __init__(self):
+        # Aquí podrías cargar tus endpoints privados
+        self.apis = [
+            {"name": "API1", "enabled": False},
+            {"name": "API2", "enabled": False},
+            {"name": "API3", "enabled": False},
+            {"name": "API4", "enabled": False},
+            {"name": "API5", "enabled": False},
+        ]
+
+    def handle(self, user_input):
+        # Recorremos APIs habilitadas (placeholder)
+        for api in self.apis:
+            if api["enabled"]:
+                # Aquí podrías hacer la llamada real
+                return f"[Respuesta de {api['name']}]"
+        return None
+[15/8, 11:31 p.m.] L P: Memory jason
+[15/8, 11:31 p.m.] L P: []
+[15/8, 11:32 p.m.] L P: Requerimiento
+[15/8, 11:32 p.m.] L P: openai
