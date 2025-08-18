@@ -1,0 +1,41 @@
+# web_interface.py
+from flask import Flask, render_template, request, jsonify
+from modules.nlp_engine import NLPEngine
+from modules.api_handler import APIHandler
+from modules.memory import Memory
+import json
+
+app = Flask(__name__, static_folder='assets', template_folder='templates')
+
+# Cargar configuración
+with open("config.json", "r", encoding="utf-8") as f:
+    config = json.load(f)
+
+# Inicializar componentes
+memory = Memory()
+nlp_engine = NLPEngine(api_key=config.get("openai_api_key"))
+api_handler = APIHandler()
+
+@app.route("/")
+def home():
+    return render_template("index.html", history=memory.get_memory())
+
+@app.route("/ask", methods=["POST"])
+def ask():
+    user_input = request.json.get("message")
+    
+    # Procesar con NLP
+    response = nlp_engine.process(user_input)
+    
+    # Consultar APIs
+    api_response = api_handler.handle(user_input)
+    if api_response:
+        response += f"\n🔧 [API]: {api_response}"
+    
+    # Guardar en memoria
+    memory.add_to_memory(user_input, response)
+    
+    return jsonify({"response": response})
+
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=5000)
